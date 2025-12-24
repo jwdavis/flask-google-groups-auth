@@ -1,0 +1,7 @@
+# Python dependencies for demo app
+
+# Flask Google Groups Auth module
+git+https://github.com/jwdavis/flask-google-groups-auth.git
+
+# For development (optional)
+python-dotenv>=1.0.0
