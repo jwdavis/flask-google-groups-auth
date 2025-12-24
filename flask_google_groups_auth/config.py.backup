@@ -1,0 +1,307 @@
+"""Configuration management for flask_google_groups_auth module.
+
+Handles service account key file and Secret Manager integration.
+For local: use SERVICE_ACCOUNT_KEY_FILE environment variable
+For Cloud Run: use SERVICE_ACCOUNT_KEY_SECRET secret in Secret Manager
+"""
+
+import json
+import os
+import secrets
+from typing import Optional
+
+from google.cloud import secretmanager
+
+
+class Config:
+    """Configuration manager for the flask_google_groups_auth module."""
+    
+    def __init__(self, app=None):
+        """
+        Initialize configuration.
+        
+        Args:
+            app: Flask application instance (optional)
+        """
+        self.app = app
+        self._service_account_info: Optional[dict] = None
+        self._delegated_admin_email: Optional[str] = None
+        self._client_id: Optional[str] = None
+        self._client_secret: Optional[str] = None
+        
+        if app is not None:
+            self.init_app(app)
+    
+    def init_app(self, app):
+        """
+        Initialize the Flask application with this config.
+        
+        Args:
+            app: Flask application instance
+        """
+        self.app = app
+        
+        # Store config in app extensions
+        if not hasattr(app, 'extensions'):
+            app.extensions = {}
+        app.extensions['flask_google_groups_auth'] = self
+        
+        # Set default configuration
+        # GCP Project ID for Secret Manager (required when using Secret Manager)
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_PROJECT_ID', os.getenv('GCP_PROJECT_ID'))
+        
+        # Service account key - use either file or secret
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_KEY_FILE', os.getenv('SERVICE_ACCOUNT_KEY_FILE'))
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_KEY_SECRET', os.getenv('SERVICE_ACCOUNT_KEY_SECRET'))
+        
+        # Delegated admin email - use either env var or secret
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_DELEGATED_ADMIN_EMAIL', os.getenv('DELEGATED_ADMIN_EMAIL'))
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_DELEGATED_ADMIN_EMAIL_SECRET', os.getenv('DELEGATED_ADMIN_EMAIL_SECRET'))
+        
+        # OAuth client ID - use either env var or secret
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_CLIENT_ID', os.getenv('GOOGLE_CLIENT_ID'))
+        apFlask secret key - use either env var or secret, or auto-generate
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_SECRET_KEY', os.getenv('SECRET_KEY'))
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_SECRET_KEY_SECRET', os.getenv('SECRET_KEY_SECRET'))
+        
+        # Set Flask secret key with fallback to auto-generation
+        if not app.secret_key:
+            secret_key_var = app.config.get('FLASK_GOOGLE_GROUPS_AUTH_SECRET_KEY')
+            secret_key_secret = app.config.get('FLASK_GOOGLE_GROUPS_AUTH_SECRET_KEY_SECRET')
+            
+            if secret_key_var:
+                app.secret_key = secret_key_var
+            elif secret_key_secret:
+                app.logger.info(f"Loading Flask secret key from Secret Manager: {secret_key_secret}")
+                app.secret_key = self.get_secret(secret_key_secret)
+            else:
+                # Auto-generate only if nothing is configured
+                app.logger.warning(
+                    "No SECRET_KEY configured. Auto-generating one, but this will invalidate "
+                    "sessions on restart. Set SECRET_KEY environment variable or SECRET_KEY_SECRET in production."
+                )
+            app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_REDIRECT_URI', os.getenv('REDIRECT_URI'))
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_REDIRECT_URI_SECRET', os.getenv('REDIRECT_URI_SECRET'))
+        
+        # Auto-generate a random secret key for sessions if not set
+        # WARNING: This should be set to a persistent value in production!
+        if not app.secret_key:
+            app.logger.warning(
+                "No SECRET_KEY configured. Auto-generating one, but this will invalidate "
+                "sessions on restart. Set SECRET_KEY environment variable in production."
+            )
+            app.secret_key = secrets.token_hex(32)
+        
+        # Configure secure session cookies
+        # These settings protect against session hijacking and CSRF attacks
+        app.config.setdefault('SESSION_COOKIE_SECURE', not app.debug)  # HTTPS only in production
+        app.config.setdefault('SESSION_COOKIE_HTTPONLY', True)  # Prevent JavaScript access
+        app.config.setdefault('SESSION_COOKIE_SAMESITE', 'Lax')  # CSRF protection
+        
+        # Set session lifetime (default: 24 hours)
+        app.config.setdefault('PERMANENT_SESSION_LIFETIME', 86400)
+        
+        # Group membership cache configuration
+        app.config.setdefault('FLASK_GOOGLE_GROUPS_AUTH_CACHE_TTL', 3600)  # 1 hour default
+        app.extensions['group_membership_cache'] = {}  # Server-side cache
+    
+    def get_secret(self, secret_id: str, project_id: Optional[str] = None) -> str:
+        """
+        Retrieve a secret from Google Cloud Secret Manager.
+        
+        Uses context manager to ensure proper client cleanup.
+        
+        Args:
+            secret_id: The ID of the secret to retrieve
+            project_id: GCP project ID (uses app config if not provided)
+            
+        Returns:
+            The secret value as a string
+            
+        Raises:
+            ValueError: If project_id is not configured
+        """
+        if project_id is None:
+            project_id = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_PROJECT_ID')
+        
+        if not project_id:
+            raise ValueError(
+                "GCP project ID not configured. Set GCP_PROJECT_ID environment variable."
+            )
+        
+        # Build the resource name
+        name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
+        
+        # Use context manager to ensure client is properly closed
+        with secretmanager.SecretManagerServiceClient() as client:
+            response = client.access_secret_version(request={"name": name})
+            return response.payload.data.decode('UTF-8')
+    
+    def get_service_account_info(self) -> dict:
+        """
+        Get service account credentials from key file (local) or Secret Manager (Cloud Run).
+        
+        For local development:
+            Set SERVICE_ACCOUNT_KEY_FILE=/path/to/key.json
+        
+        For Cloud Run:
+            Set GCP_PROJECT_ID and SERVICE_ACCOUNT_KEY_SECRET
+            Store the entire JSON key file content in Secret Manager
+        
+        Returns:
+            Dictionary with service account credentials (parsed JSON)
+            
+        Raises:
+            ValueError: If neither key file nor secret is configured
+        """
+        if self._service_account_info is None:
+            # Try local key file first
+            key_file = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_KEY_FILE')
+            if key_file:
+                self.app.logger.info(f"Loading service account key from file: {key_file}")
+                with open(key_file, 'r') as f:
+                    self._service_account_info = json.load(f)
+            else:
+                # Try Secret Manager
+                key_secret = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_KEY_SECRET')
+                if key_secret:
+                    self.app.logger.info(f"Loading service account key from Secret Manager: {key_secret}")
+                    key_json = self.get_secret(key_secret) or Secret Manager.
+        
+        Returns:
+            The delegated admin email address
+            
+        Raises:
+            ValueError: If not configured
+        """
+        if self._delegated_admin_email is None:
+            # Try environment variable first
+            self._delegated_admin_email = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_DELEGATED_ADMIN_EMAIL')
+            
+            if not self._delegated_admin_email:
+                # Try Secret Manager
+                secret_name = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_DELEGATED_ADMIN_EMAIL_SECRET')
+                if secret_name:
+                    self.app.logger.info(f"Loading delegated admin email from Secret Manager: {secret_name}")
+                    self._delegated_admin_email = self.get_secret(secret_name)
+            
+            if not self._delegated_admin_email: or Secret Manager.
+        
+        Returns:
+            The OAuth client ID
+            
+        Raises:
+            ValueError: If not configured
+        """
+        if self._client_id is None:
+            # Try environment variable first
+            self._client_id = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_CLIENT_ID')
+            
+            if not self._client_id:
+                # Try Secret Manager
+                secret_name = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_CLIENT_ID_SECRET')
+                if secret_name:
+                    self.app.logger.info(f"Loading OAuth client ID from Secret Manager: {secret_name}")
+                    self._client_id = self.get_secret(secret_name)
+            
+            if not self._client_id: or Secret Manager.
+        
+        Returns:
+            The OAuth client secret
+            
+        Raises:
+            ValueError: If not configured
+        """
+        if self._client_secret is None:
+            # Try environment variable first
+            self._client_secret = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_CLIENT_SECRET')
+            
+            if not self._client_secret:
+                # Try Secret Manager
+                secret_name = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_CLIENT_SECRET_SECRET')
+                if secret_name:
+                    self.app.logger.info(f"Loading OAuth client secret from Secret Manager: {secret_name}")
+            redirect_uri(self) -> str:
+        """
+        Get OAuth redirect URI from environment variable or Secret Manager.
+        
+        Returns:
+            The redirect URI
+            
+        Raises:
+            ValueError: If not configured
+        """
+        # Try environment variable first
+        redirect_uri = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_REDIRECT_URI')
+        
+        if not redirect_uri:
+            # Try Secret Manager
+            secret_name = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_REDIRECT_URI_SECRET')
+            if secret_name:
+                self.app.logger.info(f"Loading redirect URI from Secret Manager: {secret_name}")
+                redirect_uri = self.get_secret(secret_name)
+        
+        if not redirect_uri:
+            raise ValueError(
+                "Redirect URI not configured. Set either:\n"
+                "  - REDIRECT_URI environment variable, or\n"
+                "  - REDIRECT_URI_SECRET (also requires GCP_PROJECT_ID)"
+            )
+        
+        return redirect_uri
+    
+    def get_oauth_config(self) -> dict:
+        """
+        Get OAuth configuration.
+        
+        Returns:
+            Dictionary with client_id, client_secret, and redirect_uri
+        """
+        return {
+            'client_id': self.get_client_id(),
+            'client_secret': self.get_client_secret(),
+            'redirect_uri': self.get_redirect_uri(
+            
+        Raises:
+            ValueError: If not configured
+        """
+        if self._client_id is None:
+            self._client_id = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_CLIENT_ID')
+            
+            if not self._client_id:
+                raise ValueError(
+                    "Google OAuth client ID not configured. Set GOOGLE_CLIENT_ID environment variable."
+                )
+        return self._client_id
+    
+    def get_client_secret(self) -> str:
+        """
+        Get Google OAuth client secret from environment variable.
+        
+        Returns:
+            The OAuth client secret
+            
+        Raises:
+            ValueError: If not configured
+        """
+        if self._client_secret is None:
+            self._client_secret = self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_CLIENT_SECRET')
+            
+            if not self._client_secret:
+                raise ValueError(
+                    "Google OAuth client secret not configured. Set GOOGLE_CLIENT_SECRET environment variable."
+                )
+        return self._client_secret
+    
+    def get_oauth_config(self) -> dict:
+        """
+        Get OAuth configuration.
+        
+        Returns:
+            Dictionary with client_id, client_secret, and redirect_uri
+        """
+        return {
+            'client_id': self.get_client_id(),
+            'client_secret': self.get_client_secret(),
+            'redirect_uri': self.app.config.get('FLASK_GOOGLE_GROUPS_AUTH_REDIRECT_URI'),
+        }

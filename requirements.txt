@@ -1,0 +1,8 @@
+# Core dependencies
+# Using ~= for compatible version ranges to avoid breaking changes
+Flask~=3.0.0
+google-auth~=2.25.0
+google-auth-oauthlib~=1.2.0
+google-auth-httplib2~=0.2.0
+google-api-python-client~=2.110.0
+google-cloud-secret-manager~=2.18.0
