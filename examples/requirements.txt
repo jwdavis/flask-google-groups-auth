@@ -2,7 +2,7 @@
 Flask~=3.0.0
 
 # Flask Google Groups Auth module
-git+https://github.com/jwdavis/flask-google-groups-auth.git@9f1c467c19551bd0ac99ce5692ef3dc5cccfaa0d
+git+https://github.com/jwdavis/flask-google-groups-auth.git@4e6e19434a0ebad3210512c3b2db403b9d0d27f7
 
 # For development (optional)
 python-dotenv>=1.0.0
