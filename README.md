@@ -1,11 +1,12 @@
 # Flask Google Groups Auth
 
-**Version 0.4.0** - Flask extension for Google OAuth authentication with Google Groups membership verification
+**Version 0.5.0** - Flask extension for Google OAuth authentication with Google Groups membership verification
 
 A simplified authentication solution for Flask applications that need to:
 - Authenticate users via Google OAuth 2.0
 - Verify Google Group memberships using service account domain-wide delegation
 - **Support nested group memberships** (users in sub-groups are recognized as members of parent groups)
+- **Support external members in nested groups** (cross-domain membership via Cloud Identity API)
 - Protect routes based on authentication and group membership
 - Deploy seamlessly to both local development and Google Cloud Run
 
@@ -65,9 +66,16 @@ In [Google Cloud Console](https://console.cloud.google.com):
 
 In [Google Workspace Admin Console](https://admin.google.com):
 - Navigate to Security > API Controls > Domain-wide Delegation
-- Add service account Client ID with scope: `https://www.googleapis.com/auth/admin.directory.group.member.readonly`
+- Add service account Client ID with scope: `https://www.googleapis.com/auth/cloud-identity.groups.readonly`
 
-**2. Create OAuth 2.0 Credentials**
+**2. Enable Cloud Identity API**
+
+In [Google Cloud Console](https://console.cloud.google.com):
+- Navigate to APIs & Services > Library
+- Search for "Cloud Identity API"
+- Click Enable
+
+**3. Create OAuth 2.0 Credentials**
 
 In [Google Cloud Console](https://console.cloud.google.com):
 - Navigate to APIs & Services > Credentials
@@ -181,24 +189,30 @@ if is_group_member('user@example.com', ['group1@domain.com', 'group2@domain.com'
 
 ### Nested Group Support
 
-This package fully supports nested Google Groups. For example:
+This package fully supports nested Google Groups, including **external members across different domains**. For example:
 
 ```python
 # Scenario:
-# - User is a member of "developers@company.com"
+# - user@external.com is a member of "developers@company.com"
 # - "developers@company.com" is a member of "all-engineers@company.com"
 # - App checks for "all-engineers@company.com" membership
 
 @app.route('/engineering')
 @require_group_member('all-engineers@company.com')
 def engineering_dashboard():
-    # This will allow the user even though they're only 
+    # This will allow user@external.com even though they're only 
     # a direct member of "developers@company.com"
     return "Engineering Dashboard"
 ```
 
 **How it works:**
-- Uses Google's `members().hasMember()` API which checks both direct and indirect (nested) memberships
+- Uses Google's Cloud Identity Groups API `checkTransitiveMembership()` method
+- Supports both direct and indirect (nested) memberships
+- Works with external members (e.g., user@external.com in company.com groups)
 - If User → Group A → Group B, checking for Group B membership returns `True`
 - Works with any depth of nesting
-- No additional configuration required
+- Automatically caches group lookups to minimize API calls
+
+**Requirements:**
+- Cloud Identity API must be enabled in your Google Cloud project
+- Service account must have `cloud-identity.groups.readonly` scope in domain-wide delegation

@@ -4,6 +4,8 @@ Google Group membership checking using domain-wide delegation.
 Supports nested group memberships - if a user is in Group A and Group A
 is a member of Group B, the user will be considered a member of Group B.
 
+Uses Cloud Identity Groups API to support cross-domain nested memberships.
+
 Uses service account key file with domain-wide delegation (DWD).
 For local: reads key file from filesystem
 For Cloud Run: reads key file JSON from Secret Manager
@@ -13,60 +15,22 @@ import hashlib
 from datetime import datetime
 
 from flask import current_app, session
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
-
-def get_admin_directory_service():
-    """
-    Create Admin Directory API service with domain-wide delegation.
-    
-    Uses service account credentials from key file (local) or Secret Manager (Cloud Run).
-    The service account must have domain-wide delegation enabled with scope:
-        https://www.googleapis.com/auth/admin.directory.group.member.readonly
-    
-    Returns:
-        Resource: Admin Directory API service
-        
-    Raises:
-        ValueError: If required credentials are not available
-    """
-    config = current_app.extensions['flask_google_groups_auth']
-    delegated_admin_email = config.get_delegated_admin_email()
-    service_account_info = config.get_service_account_info()
-    scopes = ['https://www.googleapis.com/auth/admin.directory.group.member.readonly']
-    
-    try:
-        current_app.logger.debug(f"Creating credentials with delegated admin: {delegated_admin_email}")
-        
-        # Create credentials from service account info (dict)
-        credentials = service_account.Credentials.from_service_account_info(
-            service_account_info,
-            scopes=scopes,
-            subject=delegated_admin_email
-        )
-        
-        # Build and return the Admin Directory service
-        return build('admin', 'directory_v1', credentials=credentials)
-        
-    except Exception as e:
-        error_msg = (
-            f"Failed to create Admin Directory service: {e}\n"
-            f"Delegated admin: {delegated_admin_email}"
-        )
-        current_app.logger.error(error_msg)
-        raise
+from .cloud_identity import check_transitive_membership, get_group_resource_name
 
 
 def check_group_membership(user_email, group_email):
     """
     Check if a user is a member of a specific Google Group.
     
-    This function supports nested group memberships. For example, if:
-    - User is a member of Group A
+    This function supports nested group memberships, including cross-domain scenarios.
+    For example, if:
+    - User@external.com is a member of Group A
     - Group A is a member of Group B
-    Then this function will return True when checking if the user is in Group B.
+    Then this function will return True when checking if User@external.com is in Group B.
+    
+    Uses Cloud Identity Groups API's checkTransitiveMembership which supports
+    nested memberships across different domains.
     
     Args:
         user_email: Email address of the user to check
@@ -76,41 +40,18 @@ def check_group_membership(user_email, group_email):
         bool: True if user is a member (directly or through nested groups), False otherwise
     """
     try:
-        # Get Admin Directory service
-        service = get_admin_directory_service()
+        # Get the Cloud Identity resource name for the group
+        group_resource_name = get_group_resource_name(group_email)
         
-        # Check if the user is a member of the group (including nested membership)
-        # Using hasMember() instead of get() to support nested groups
-        try:
-            result = service.members().hasMember(
-                groupKey=group_email,
-                memberKey=user_email
-            ).execute()
-            
-            # The hasMember() API returns a dict with 'isMember' boolean field
-            is_member = result.get('isMember', False)
-            
-            if is_member:
-                current_app.logger.info(
-                    f"User {user_email} is a member of {group_email} "
-                    f"(including nested group membership)"
-                )
-            else:
-                current_app.logger.info(
-                    f"User {user_email} is not a member of {group_email}"
-                )
-            
-            return is_member
-            
-        except HttpError as e:
-            if e.resp.status == 404:
-                # Group not found or user is not a member
-                current_app.logger.info(f"User {user_email} is not a member of {group_email}")
-                return False
-            else:
-                # Some other error occurred
-                current_app.logger.error(f"Error checking group membership: {e}")
-                raise
+        # Check transitive membership
+        is_member = check_transitive_membership(user_email, group_resource_name)
+        
+        return is_member
+        
+    except ValueError as e:
+        # Group not found
+        current_app.logger.error(f"Group lookup failed: {e}")
+        return False
     
     except Exception as e:
         current_app.logger.error(f"Error checking group membership: {e}")

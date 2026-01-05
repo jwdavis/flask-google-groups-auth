@@ -115,7 +115,7 @@ def marketing_route():
 # ============================================================================
 
 @app.route('/all-staff')
-@require_group_member('all-staff@example.com')
+@require_group_member('InstructorAppAccess@example.com')
 def all_staff_route():
     """
     This route demonstrates nested group membership.
