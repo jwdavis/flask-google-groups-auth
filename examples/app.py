@@ -111,6 +111,30 @@ def marketing_route():
 
 
 # ============================================================================
+# OPTION 5: Nested group membership
+# ============================================================================
+
+@app.route('/all-staff')
+@require_group_member('all-staff@example.com')
+def all_staff_route():
+    """
+    This route demonstrates nested group membership.
+    
+    Example hierarchy:
+    - all-staff@example.com (parent group)
+      - engineering@example.com (sub-group)
+      - marketing@example.com (sub-group)
+      - admins@example.com (sub-group)
+    
+    Users who are members of engineering, marketing, or admins groups
+    will automatically have access to this route, even though they're
+    not direct members of all-staff@example.com.
+    """
+    user = get_current_user()
+    return f"<h1>All Staff Area</h1><p>Welcome {user['name']}! You have access through direct or nested group membership.</p>"
+
+
+# ============================================================================
 # Public routes
 # ============================================================================
 
@@ -181,6 +205,16 @@ def home():
                 <p>Accessible to marketing team or leads</p>
                 <code>@require_group_member(['marketing@example.com', 'marketing-leads@example.com'])</code>
             </div>
+            
+            <div class="route">
+                <h3><a href="/all-staff">/all-staff</a></h3>
+                <p>Accessible via nested group membership</p>
+                <code>@require_group_member('all-staff@example.com')</code>
+                <p style="font-size: 0.9em; color: #666; margin-top: 5px;">
+                    <strong>Nested Groups Example:</strong> If all-staff contains engineering, marketing, and admins as sub-groups,
+                    members of those sub-groups will have access even though they're not direct members of all-staff.
+                </p>
+            </div>
         </div>
         
         <h2>How It Works:</h2>
@@ -189,6 +223,7 @@ def home():
             <li>Groups must always be passed directly to the decorator</li>
             <li>Single group: <code>@require_group_member('group@example.com')</code></li>
             <li>Multiple groups: <code>@require_group_member(['group1@example.com', 'group2@example.com'])</code></li>
+            <li><strong>Nested groups are supported:</strong> If User → Group A → Group B, checking for Group B returns True</li>
         </ul>
     </body>
     </html>

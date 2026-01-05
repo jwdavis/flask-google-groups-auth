@@ -1,10 +1,11 @@
 # Flask Google Groups Auth
 
-**Version 0.3.0** - Flask extension for Google OAuth authentication with Google Groups membership verification
+**Version 0.4.0** - Flask extension for Google OAuth authentication with Google Groups membership verification
 
 A simplified authentication solution for Flask applications that need to:
 - Authenticate users via Google OAuth 2.0
 - Verify Google Group memberships using service account domain-wide delegation
+- **Support nested group memberships** (users in sub-groups are recognized as members of parent groups)
 - Protect routes based on authentication and group membership
 - Deploy seamlessly to both local development and Google Cloud Run
 
@@ -177,3 +178,27 @@ if is_group_member('user@example.com', 'admins@yourdomain.com'):
 if is_group_member('user@example.com', ['group1@domain.com', 'group2@domain.com']):
     print("User is in at least one group")
 ```
+
+### Nested Group Support
+
+This package fully supports nested Google Groups. For example:
+
+```python
+# Scenario:
+# - User is a member of "developers@company.com"
+# - "developers@company.com" is a member of "all-engineers@company.com"
+# - App checks for "all-engineers@company.com" membership
+
+@app.route('/engineering')
+@require_group_member('all-engineers@company.com')
+def engineering_dashboard():
+    # This will allow the user even though they're only 
+    # a direct member of "developers@company.com"
+    return "Engineering Dashboard"
+```
+
+**How it works:**
+- Uses Google's `members().hasMember()` API which checks both direct and indirect (nested) memberships
+- If User → Group A → Group B, checking for Group B membership returns `True`
+- Works with any depth of nesting
+- No additional configuration required

@@ -1,6 +1,9 @@
 """
 Google Group membership checking using domain-wide delegation.
 
+Supports nested group memberships - if a user is in Group A and Group A
+is a member of Group B, the user will be considered a member of Group B.
+
 Uses service account key file with domain-wide delegation (DWD).
 For local: reads key file from filesystem
 For Cloud Run: reads key file JSON from Secret Manager
@@ -60,31 +63,48 @@ def check_group_membership(user_email, group_email):
     """
     Check if a user is a member of a specific Google Group.
     
+    This function supports nested group memberships. For example, if:
+    - User is a member of Group A
+    - Group A is a member of Group B
+    Then this function will return True when checking if the user is in Group B.
+    
     Args:
         user_email: Email address of the user to check
         group_email: Email of the Google Group to check
         
     Returns:
-        bool: True if user is a member, False otherwise
+        bool: True if user is a member (directly or through nested groups), False otherwise
     """
     try:
         # Get Admin Directory service
         service = get_admin_directory_service()
         
-        # Check if the user is a member of the group
+        # Check if the user is a member of the group (including nested membership)
+        # Using hasMember() instead of get() to support nested groups
         try:
-            member = service.members().get(
+            result = service.members().hasMember(
                 groupKey=group_email,
                 memberKey=user_email
             ).execute()
             
-            # If we get here, the user is a member
-            current_app.logger.info(f"User {user_email} is a member of {group_email}")
-            return True
+            # The hasMember() API returns a dict with 'isMember' boolean field
+            is_member = result.get('isMember', False)
+            
+            if is_member:
+                current_app.logger.info(
+                    f"User {user_email} is a member of {group_email} "
+                    f"(including nested group membership)"
+                )
+            else:
+                current_app.logger.info(
+                    f"User {user_email} is not a member of {group_email}"
+                )
+            
+            return is_member
             
         except HttpError as e:
             if e.resp.status == 404:
-                # User is not a member
+                # Group not found or user is not a member
                 current_app.logger.info(f"User {user_email} is not a member of {group_email}")
                 return False
             else:
